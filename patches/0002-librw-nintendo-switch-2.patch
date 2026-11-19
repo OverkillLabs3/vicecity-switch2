@@ -1,0 +1,89 @@
+diff --git a/src/gl/gl3device.cpp b/src/gl/gl3device.cpp
+index 5275fe5..35c33dd 100644
+--- a/src/gl/gl3device.cpp
++++ b/src/gl/gl3device.cpp
+@@ -16,6 +16,24 @@
+ #include "rwgl3shader.h"
+ #include "rwgl3impl.h"
+ 
++#ifdef __SWITCH__
++// Asks the display for its highest refresh rate (120 Hz in handheld mode). Setting a swap interval withdraws the request,
++// so it is made again after every change, but not when the interval stays the same.
++extern "C" void switch_s2_set_frame_rates(void);
++static inline int switch_s2_swap_interval(int interval)
++{
++    static int last = -12345;
++    if (interval == last) {
++        return 0;
++    }
++    last = interval;
++    int r = SDL_GL_SetSwapInterval(interval);
++    switch_s2_set_frame_rates();
++    return r;
++}
++#define SDL_GL_SetSwapInterval switch_s2_swap_interval
++#endif
++
+ #define PLUGIN_ID 0
+ 
+ namespace rw {
+@@ -92,7 +110,11 @@ const char *shaderDecl100es =
+ "precision highp float;\n"
+ "precision highp int;\n";
+ const char *shaderDecl310es =
++#ifdef __SWITCH__
++"#version 300 es\n"
++#else
+ "#version 310 es\n"
++#endif
+ "#define VSIN(index) layout(location = index) in\n"
+ "#define VSOUT out\n"
+ "#define FSIN in\n"
+@@ -1544,10 +1566,15 @@ static struct {
+ 	int gl;
+ 	int major, minor;
+ } profiles[] = {
++#ifdef __SWITCH__
++	// Desktop GL goes through zink on the Switch 2 and takes the console down: only ES 3.0 is safe.
++	{ SDL_GL_CONTEXT_PROFILE_ES, 3, 0 },
++#else
+ 	{ SDL_GL_CONTEXT_PROFILE_CORE, 3, 3 },
+ 	{ SDL_GL_CONTEXT_PROFILE_CORE, 2, 1 },
+ 	{ SDL_GL_CONTEXT_PROFILE_ES, 3, 1 },
+ 	{ SDL_GL_CONTEXT_PROFILE_ES, 2, 0 },
++#endif
+ 	{ 0, 0, 0 },
+ };
+ 
+@@ -1560,7 +1587,16 @@ startSDL2(void)
+ 
+ 	mode = &glGlobals.modes[glGlobals.currentMode];
+ 
++#ifdef __SWITCH__
++	// the context attributes that work on the Switch 2: no multisampling, 24 bit depth, 8 bit stencil
++	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
++	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
++	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
++	SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
++	SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
++#else
+ 	SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, glGlobals.numSamples);
++#endif
+ 
+ 	int i;
+ 	for(i = 0; profiles[i].gl; i++){
+@@ -1573,9 +1609,14 @@ startSDL2(void)
+ 			if (win)
+ 				SDL_SetWindowDisplayMode(win, &mode->mode);
+ 		} else {
++#ifdef __SWITCH__
++			// the surface is 1920x1080, the system scales it on a TV
++			win = SDL_CreateWindow(glGlobals.winTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 1920, 1080, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
++#else
+ 			win = SDL_CreateWindow(glGlobals.winTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, glGlobals.winWidth, glGlobals.winHeight, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
+ 			if (win)
+ 				SDL_SetWindowDisplayMode(win, NULL);
++#endif
+ 		}
+ 		if(win){
+ 			gl3Caps.gles = profiles[i].gl == SDL_GL_CONTEXT_PROFILE_ES;

@@ -1,0 +1,433 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 363aa2d..5159e8f 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -46,6 +46,11 @@ target_include_directories(${EXECUTABLE}
+         $<BUILD_INTERFACE:${${PROJECT}_INCLUDES}>
+ )
+ 
++if(NINTENDO_SWITCH)
++    # the Switch 2 headers first: without this the compiler uses the Switch 1 libnx ones
++    target_include_directories(${EXECUTABLE} SYSTEM BEFORE PRIVATE ${DEVKITPRO}/libounce/include)
++endif()
++
+ target_compile_definitions(${EXECUTABLE}
+     PRIVATE
+         $<IF:$<CONFIG:DEBUG>,DEBUG,NDEBUG>
+@@ -110,6 +115,12 @@ if(${PROJECT}_AUDIO STREQUAL "OAL")
+     if(NINTENDO_SWITCH)
+         find_package(PkgConfig REQUIRED)
+         pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
++        # The pkg-config file of SDL2 names the Switch 1 libnx and Mesa libraries. On the Switch 2 they take the console
++        # down: keep only SDL2 itself, EGL and libnx resolve to libounce and OunceVK through the -L order.
++        set_target_properties(PkgConfig::SDL2 PROPERTIES
++            INTERFACE_LINK_LIBRARIES "${DEVKITPRO}/portlibs/switch/lib/libSDL2.a"
++            INTERFACE_LINK_OPTIONS ""
++            INTERFACE_INCLUDE_DIRECTORIES "${DEVKITPRO}/portlibs/switch/include/SDL2")
+         target_link_libraries(${EXECUTABLE} PRIVATE PkgConfig::SDL2)
+     endif()
+ elseif(${PROJECT}_AUDIO STREQUAL "MSS")
+diff --git a/src/core/Cam.cpp b/src/core/Cam.cpp
+index 70e357a..59aec42 100644
+--- a/src/core/Cam.cpp
++++ b/src/core/Cam.cpp
+@@ -37,7 +37,11 @@ extern float fRangePlayerRadius;
+ extern float fCloseNearClipLimit;
+ 
+ #ifdef FREE_CAM
++#ifdef __SWITCH__
++bool CCamera::bFreeCam = true;
++#else
+ bool CCamera::bFreeCam = false;
++#endif
+ int nPreviousMode = -1;
+ #endif
+ 
+diff --git a/src/core/Pad.cpp b/src/core/Pad.cpp
+index 9530f9e..1f32a3f 100644
+--- a/src/core/Pad.cpp
++++ b/src/core/Pad.cpp
+@@ -47,6 +47,10 @@
+ #include "libpad.h"
+ #endif
+ 
++#ifdef __SWITCH__
++int SwitchPointerMouseState(void);
++#endif
++
+ CPad Pads[MAX_PADS];
+ #ifdef GTA_PS2
+ u_long128 pad_dma_buf[scePadDmaBufferMax] __attribute__((aligned(64)));
+@@ -943,6 +947,9 @@ void CPad::UpdateMouse()
+ #ifdef LIBRW_SDL2
+         int xpos = 1, ypos;
+         int mouseState = SDL_GetMouseState(&xpos, &ypos);
++#ifdef __SWITCH__
++        mouseState |= SwitchPointerMouseState();
++#endif
+ #else
+         double xpos = 1.0f, ypos;
+ 		glfwGetCursorPos(PSGLOBAL(window), &xpos, &ypos);
+diff --git a/src/core/config.h b/src/core/config.h
+index 7329544..131b1bb 100644
+--- a/src/core/config.h
++++ b/src/core/config.h
+@@ -168,8 +168,10 @@ enum Config {
+ 
+ #define GTA_VERSION	GTAVC_PC_11
+ 
+-// Enable configuration for handheld console ports
+-#if defined(__SWITCH__) || defined(PSP2)
++// Enable configuration for handheld console ports.
++// The Switch 2 is not one: it has a pointer (the Joy-Con mouse), so mouse input and the PC camera and menus stay on.
++// Only the pad menu is kept from the handheld setup.
++#if defined(PSP2)
+ 	#define GTA_HANDHELD
+ #endif
+ 
+@@ -371,11 +373,14 @@ enum Config {
+ //#	define PS2_MENU_USEALLPAGEICONS
+ #else
+ #	define MAP_ENHANCEMENTS			// Adding waypoint and better mouse support
+-#	if defined(XINPUT) || defined(GTA_HANDHELD)
++#	if defined(XINPUT) || defined(GTA_HANDHELD) || defined(__SWITCH__)
+ #		define GAMEPAD_MENU		// Add gamepad menu
+ #	endif
+-#	define TRIANGLE_BACK_BUTTON
+-//#	define CIRCLE_BACK_BUTTON
++#	ifdef __SWITCH__
++#		define CIRCLE_BACK_BUTTON
++#	else
++#		define TRIANGLE_BACK_BUTTON
++#	endif
+ #define LEGACY_MENU_OPTIONS			// i.e. frame sync(vsync)
+ #define MUCH_SHORTER_OUTRO_SCREEN
+ // #define XBOX_MESSAGE_SCREEN			// Blue background, no "saved successfully press OK" screen etc.
+diff --git a/src/core/main.cpp b/src/core/main.cpp
+index a412a98..5deb641 100644
+--- a/src/core/main.cpp
++++ b/src/core/main.cpp
+@@ -1161,6 +1161,33 @@ DisplayGameDebugText()
+ 		FrameSamples = 0;
+ 	}
+ 
++#ifdef __SWITCH__
++	// FPS counter: clicking both sticks together turns it on and off
++	extern bool SwitchShowFps;
++	if ( SwitchShowFps && !bDisplayPosn )
++	{
++		sprintf(str, "%d FPS", (int32)(FramesPerSecond + 0.5f));
++		AsciiToUnicode(str, ustr);
++
++		CFont::SetPropOn();
++		CFont::SetBackgroundOff();
++		CFont::SetScale(SCREEN_SCALE_X(0.6f), SCREEN_SCALE_Y(0.8f));
++		CFont::SetCentreOff();
++		CFont::SetRightJustifyOff();
++		CFont::SetJustifyOff();
++		CFont::SetBackGroundOnlyTextOff();
++		CFont::SetWrapx(SCREEN_STRETCH_X(DEFAULT_SCREEN_WIDTH));
++		CFont::SetFontStyle(FONT_STANDARD);
++		CFont::SetDropColor(CRGBA(0, 0, 0, 255));
++		CFont::SetDropShadowPosition(2);
++		CFont::SetColor(CRGBA(0, 0, 0, 255));
++		CFont::PrintString(41.0f, 41.0f, ustr);
++
++		CFont::SetColor(CRGBA(205, 205, 0, 255));
++		CFont::PrintString(40.0f, 40.0f, ustr);
++	}
++#endif
++
+ 	if ( bDisplayPosn )
+ 	{
+ 		CVector pos = FindPlayerCoors();
+diff --git a/src/rw/TexRead.cpp b/src/rw/TexRead.cpp
+index 9b190a4..f9ae57b 100644
+--- a/src/rw/TexRead.cpp
++++ b/src/rw/TexRead.cpp
+@@ -298,7 +298,12 @@ CanVideoCardDoDXT(void)
+ #ifdef LIBRW
+ 	// TODO
+ #ifdef RW_OPENGL
++#ifdef __SWITCH__
++	// the GPU driver of the console takes S3TC textures: use them as stored, without the slow conversion pass on first start
++	return rw::gl3::gl3Caps.dxtSupported;
++#else
+ 	return false;
++#endif
+ #else
+ 	return true;
+ #endif
+diff --git a/src/skel/sdl2/sdl2.cpp b/src/skel/sdl2/sdl2.cpp
+index 7b8bcbb..3f8fbf4 100644
+--- a/src/skel/sdl2/sdl2.cpp
++++ b/src/skel/sdl2/sdl2.cpp
+@@ -2,7 +2,16 @@
+ 
+ long _dwOperatingSystemVersion;
+ 
++#ifndef __SWITCH__
+ #include <sys/sysinfo.h>
++#endif
++#ifdef __SWITCH__
++void SwitchEarlyInit(void);
++void SwitchPointerPoll(void);
++int SwitchPointerSide(void);
++void SwitchToggleFps(void);
++bool SwitchGraphicsNeedSetup(void);
++#endif
+ #include <errno.h>
+ #include <locale.h>
+ #include <signal.h>
+@@ -64,6 +73,10 @@ static RwInt32 bestWndMode = -1;
+ static psGlobalType PsGlobal;
+ 
+ static SDL_GameController* gamepad1 = nullptr;
++#ifdef __SWITCH__
++static SDL_GameController* switchPads[8];
++static int numSwitchPads = 0;
++#endif
+ static SDL_GameController* gamepad2 = nullptr;
+ 
+ #define PSGLOBAL(var) (((psGlobalType *)(RsGlobal.ps))->var)
+@@ -333,7 +346,9 @@ psInitialize(void)
+     FrontEndMenuManager.LoadSettings();
+ #endif
+ 
+-#ifndef __APPLE__
++#if defined(__SWITCH__)
++    _dwMemAvailPhys = 1024u * 1024u * 1024u;
++#elif !defined(__APPLE__)
+     struct sysinfo systemInfo;
+     sysinfo(&systemInfo);
+     _dwMemAvailPhys = systemInfo.freeram;
+@@ -720,6 +735,22 @@ void _InputInitialiseJoys()
+         }
+     }
+ 
++#ifdef __SWITCH__
++    // Nothing else starts SDL's joystick subsystem, and without it SDL lists the pads but never updates their state.
++    // The mapping is the one of the Switch controller, which SDL does not know. The console reports eight slots: open them all.
++    SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK | SDL_INIT_EVENTS);
++    SDL_GameControllerAddMapping("000038f853776974636820436f6e7400,Switch Controller,a:b0,b:b1,back:b11,dpdown:b15,dpleft:b12,dpright:b14,dpup:b13,leftshoulder:b6,leftstick:b4,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,rightstick:b5,righttrigger:b9,rightx:a2,righty:a3,start:b10,x:b2,y:b3,");
++    for (int i = 0; i < SDL_NumJoysticks() && numSwitchPads < 8; i++) {
++        if (SDL_IsGameController(i)) {
++            SDL_GameController *c = SDL_GameControllerOpen(i);
++            if (c) {
++                switchPads[numSwitchPads++] = c;
++                if (gamepad1 == nullptr)
++                    gamepad1 = c;
++            }
++        }
++    }
++#endif
+     // TODO SDL2 the part below seems unnecessary SDL2 (at least on Linux), remove in the future
+     /*for (int i = 0; i <= SDL_NumJoysticks(); i++) {
+         if (!IsThisJoystickBlacklisted(i)) {
+@@ -1299,9 +1330,35 @@ windowIconifyCB(int iconified) {
+     WindowIconified = !!iconified;
+ }
+ 
++#ifdef __SWITCH__
++#include "postfx.h"
++#include "Renderer.h"
++#include "custompipes.h"
++extern bool gPS2alphaTest;
++
++// The highest graphics settings, applied once at the first start. They are saved with the game's own options afterwards.
++static void SwitchMaxGraphics(void)
++{
++    if (!SwitchGraphicsNeedSetup())
++        return;
++    FrontEndMenuManager.m_PrefsLOD = 1.8f;
++    CRenderer::ms_lodDistScale = 1.8f;
++    gPS2alphaTest = true;
++    CPostFX::EffectSwitch = CPostFX::POSTFX_NORMAL;
++    CustomPipes::VehiclePipeSwitch = 1;
++    CustomPipes::RimlightEnable = true;
++    CustomPipes::LightmapEnable = true;
++    CustomPipes::GlossEnable = true;
++}
++#endif
++
+ void inputEventHandler() {
+     SDL_Event event;
+ 
++#ifdef __SWITCH__
++    SwitchPointerPoll();
++#endif
++
+     while (SDL_PollEvent(&event)) {
+         switch (event.type) {
+             case SDL_KEYDOWN:	/* fall-through */
+@@ -1346,7 +1403,13 @@ void inputEventHandler() {
+     bool wantRelative = gGameState == GS_PLAYING_GAME &&
+                         !FrontEndMenuManager.m_bMenuActive && !WindowIconified;
+     if (wantRelative != mouseRelativeMode) {
++#ifdef __SWITCH__
++        // SDL cannot give the relative mode without a real mouse, the Joy-Con mouse sends relative motion anyway
++        SDL_SetRelativeMouseMode(wantRelative ? SDL_TRUE : SDL_FALSE);
++        if (true) {
++#else
+         if (SDL_SetRelativeMouseMode(wantRelative ? SDL_TRUE : SDL_FALSE) == 0) {
++#endif
+             mouseRelativeMode = wantRelative;
+             mouseRelX = mouseRelY = 0;
+             if (wantRelative) {
+@@ -1377,15 +1440,21 @@ main(int argc, char *argv[])
+     RwV2d pos;
+     RwInt32 i;
+ 
++#ifdef __SWITCH__
++    SwitchEarlyInit();
++#endif
++
+ #ifdef USE_CUSTOM_ALLOCATOR
+     InitMemoryMgr();
+ #endif
+ 
++#ifndef __SWITCH__
+     struct sigaction act;
+     act.sa_sigaction = terminateHandler;
+     act.sa_flags = SA_SIGINFO;
+     sigaction(SIGTERM, &act, NULL);
+-#ifdef FLUSHABLE_STREAMING
++#endif
++#if defined(FLUSHABLE_STREAMING) && !defined(__SWITCH__)
+     struct sigaction sa;
+     sigemptyset(&sa.sa_mask);
+     sa.sa_handler = dummyHandler;
+@@ -1664,6 +1733,9 @@ main(int argc, char *argv[])
+ #ifdef PS2_MENU
+                         gGameState = GS_INIT_PLAYING_GAME;
+ #else
++#ifdef __SWITCH__
++                        SwitchMaxGraphics();
++#endif
+                         gGameState = GS_INIT_FRONTEND;
+                         TRACE("gGameState = GS_INIT_FRONTEND;");
+ #endif
+@@ -1760,8 +1832,13 @@ main(int argc, char *argv[])
+                         float ms = (float)CTimer::GetCurrentTimeInCycles() / (float)CTimer::GetCyclesPerMillisecond();
+                         if ( RwInitialised )
+                         {
++#ifdef __SWITCH__
++                            // the swap waits for the display refresh; a millisecond counter would hold the game at 111 fps
++                            RsEventHandler(rsIDLE, (void *)TRUE);
++#else
+                             if (!FrontEndMenuManager.m_PrefsFrameLimiter || (1000.0f / (float)RsGlobal.maxFPS) < ms)
+                                 RsEventHandler(rsIDLE, (void *)TRUE);
++#endif
+                         }
+                         break;
+                     }
+@@ -1908,12 +1985,52 @@ void CapturePad(RwInt32 padID)
+     else
+         assert("invalid padID");
+ 
++#ifdef __SWITCH__
++    if (padID == 0 && numSwitchPads > 0) {
++        // use the controller that has input, and keep it until another one gets some
++        static SDL_GameController* active = nullptr;
++        for (int k = 0; k < numSwitchPads; k++) {
++            SDL_GameController *c = switchPads[k];
++            bool any = false;
++            for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX && !any; b++)
++                any = SDL_GameControllerGetButton(c, (SDL_GameControllerButton) b) != 0;
++            for (int a = SDL_CONTROLLER_AXIS_LEFTX; a <= SDL_CONTROLLER_AXIS_RIGHTY && !any; a++)
++                any = Abs(SDL_GameControllerGetAxis(c, (SDL_GameControllerAxis) a)) > 8000;
++            if (any) {
++                active = c;
++                break;
++            }
++        }
++        if (active != nullptr)
++            gamepad = active;
++    }
++#endif
++
+     if (gamepad == nullptr)
+         return;
+ 
+     SDL_Joystick* joy = SDL_GameControllerGetJoystick(gamepad);
+     int joyId = SDL_JoystickInstanceID(joy);
+     int numAxes = SDL_JoystickNumAxes(joy);
++#ifdef __SWITCH__
++    SDL_GameControllerUpdate();
++    {
++        // The default joypad bindings are only made when a pad appears through a device event, which is skipped here.
++        // The D-pad is bound to walking by default; the stick walks and looks, so it is free for the radio and the camera.
++        static bool joypadBound = false;
++        if (!joypadBound) {
++            joypadBound = true;
++            ControlsManager.InitDefaultControlConfigJoyPad(SDL_JoystickNumButtons(joy));
++            ControlsManager.SetControllerKeyAssociatedWithAction(GO_FORWARD, 0, JOYSTICK);
++            ControlsManager.SetControllerKeyAssociatedWithAction(GO_RIGHT, 0, JOYSTICK);
++            ControlsManager.SetControllerKeyAssociatedWithAction(GO_BACK, 0, JOYSTICK);
++            ControlsManager.SetControllerKeyAssociatedWithAction(GO_LEFT, 0, JOYSTICK);
++            ControlsManager.SetControllerKeyAssociatedWithAction(VEHICLE_CHANGE_RADIO_STATION, 14, JOYSTICK);
++            ControlsManager.SetControllerKeyAssociatedWithAction(CAMERA_CHANGE_VIEW_ALL_SITUATIONS, 13, JOYSTICK);
++            PSGLOBAL(joy1id) = joyId;
++        }
++    }
++#endif
+ 
+     if (ControlsManager.m_bFirstCapture == false) {
+         memcpy(&ControlsManager.m_OldState, &ControlsManager.m_NewState, sizeof(ControlsManager.m_NewState));
+@@ -1948,6 +2065,28 @@ void CapturePad(RwInt32 padID)
+         if (rt != 0.0f)
+             ControlsManager.m_NewState.mappedButtons[16] = rt > -0.8f;
+     }
++#ifdef __SWITCH__
++    {
++        // The shoulder and trigger of the Joy-Con that is the mouse are its click buttons: they must fire as the mouse
++        // button only. As pad input they would switch the game to controller controls and block the mouse.
++        int side = SwitchPointerSide();
++        if (side == 1) {
++            ControlsManager.m_NewState.mappedButtons[SDL_CONTROLLER_BUTTON_LEFTSHOULDER] = false;
++            ControlsManager.m_NewState.mappedButtons[15] = false;
++        } else if (side == 2) {
++            ControlsManager.m_NewState.mappedButtons[SDL_CONTROLLER_BUTTON_RIGHTSHOULDER] = false;
++            ControlsManager.m_NewState.mappedButtons[16] = false;
++        }
++
++        // clicking both sticks together turns the FPS counter on and off
++        static bool sticksHeld = false;
++        bool sticks = ControlsManager.m_NewState.mappedButtons[SDL_CONTROLLER_BUTTON_LEFTSTICK] &&
++                      ControlsManager.m_NewState.mappedButtons[SDL_CONTROLLER_BUTTON_RIGHTSTICK];
++        if (sticks && !sticksHeld)
++            SwitchToggleFps();
++        sticksHeld = sticks;
++    }
++#endif
+     // TODO? L2-R2 axes(not buttons-that's fine) on joysticks that don't have SDL gamepad mapping AREN'T handled, and I think it's impossible to do without mapping.
+ 
+     if (ControlsManager.m_bFirstCapture == true) {
+@@ -2000,6 +2139,11 @@ void CapturePad(RwInt32 padID)
+ 
+ void joysChangeCB(int jid, int event)
+ {
++#ifdef __SWITCH__
++    if (event == SDL_JOYDEVICEADDED) {
++        return; // the pads are opened at the start, the other slots must not replace them
++    }
++#endif
+     if (event == SDL_JOYDEVICEADDED && !IsThisJoystickBlacklisted(jid)) {
+         if (PSGLOBAL(joy1id) == -1) {
+             assert(gamepad1 == nullptr);
+diff --git a/src/skel/skeleton.cpp b/src/skel/skeleton.cpp
+index 2bb2346..3b3ea3c 100644
+--- a/src/skel/skeleton.cpp
++++ b/src/skel/skeleton.cpp
+@@ -403,7 +403,11 @@ RsInitialize(void)
+ 	RsGlobal.width = DEFAULT_SCREEN_WIDTH;
+ 	RsGlobal.height = DEFAULT_SCREEN_HEIGHT;
+ 	
++#ifdef __SWITCH__
++	RsGlobal.maxFPS = 120;
++#else
+ 	RsGlobal.maxFPS = 30;
++#endif
+ 	 
+ 	RsGlobal.quit = FALSE;
+ 
